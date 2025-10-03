@@ -6,8 +6,8 @@ import urequests as requests
 import ubinascii
 import ubluetooth
 
-SSID = "iPhone (Владимир)"
-PASSWORD = "12345678"
+SSID = "005"
+PASSWORD = "12345678900"
 
 map_name = None
 beacons = []
@@ -16,7 +16,7 @@ write_road = None
 MAC_ADDRESS = None
 JSON_PARSE_ERROR = "JSON parse error:"
 
-HOST_ADDRESS = "http://10.145.244.78:8000"
+HOST_ADDRESS = "http://192.168.31.181:8000"
 
 # BLE scanning and reporting config
 SCAN_TIME = 0.05  # seconds per scan burst
@@ -134,25 +134,34 @@ class BLEScanner:
 
 def wifi_connect(ssid, pwd):
     wifi = network.WLAN(network.STA_IF)
+    
+    wifi.active(False)
+    time.sleep(1)
     wifi.active(True)
+    time.sleep(1)
+    
+    wifi.disconnect()
+    time.sleep(2)
 
     print("Connecting to Wi-Fi:", ssid)
     wifi.connect(ssid, pwd)
 
-    connection_timeout = 2.5
+    connection_timeout = 15
     start = time.time()
 
     while not wifi.isconnected():
         if time.time() - start > connection_timeout:
             print("Failed to connect to Wi-Fi")
-            break
+            wifi.disconnect()
+            time.sleep(2)
+            return False
+        print("Waiting for connection...")
         time.sleep(1)
 
     if wifi.isconnected():
-        ip = wifi.ifconfig()[0]
         print("Connected to Wi-Fi!")
-        # print("IP address:", ip)
         return True
+    return False
 
 def do_post(url, json_dict=None):
     try:

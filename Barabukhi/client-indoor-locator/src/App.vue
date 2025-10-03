@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 
-const HOST_ADDRESS = "10.145.244.78:8000"
+const HOST_ADDRESS = "192.168.31.181:8000"
 
 // Типы
 interface Beacon {
@@ -390,12 +390,110 @@ const handleDeviceMapChange = (device: Device) => {
 // Визуализация
 const svgWidth = 600;
 const svgHeight = 600;
-const scale = ref(8);
-const offsetX = ref(300);
-const offsetY = ref(500);
+
+// Динамическое вычисление масштаба и смещения на основе выбранной карты
+const mapBounds = computed(() => {
+  if (!selectedMap.value || selectedMap.value.beacons.length === 0) {
+    return { minX: -10, maxX: 10, minY: -10, maxY: 10 };
+  }
+  
+  const beacons = selectedMap.value.beacons;
+  let minX = beacons[0].x;
+  let maxX = beacons[0].x;
+  let minY = beacons[0].y;
+  let maxY = beacons[0].y;
+  
+  for (const b of beacons) {
+    if (b.x < minX) minX = b.x;
+    if (b.x > maxX) maxX = b.x;
+    if (b.y < minY) minY = b.y;
+    if (b.y > maxY) maxY = b.y;
+  }
+  
+  // Добавляем учет координат устройств на карте
+  for (const d of devices.value) {
+    if (d.mapId === selectedMapId.value && d.path.length > 0) {
+      for (const p of d.path) {
+        if (p.x < minX) minX = p.x;
+        if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y;
+        if (p.y > maxY) maxY = p.y;
+      }
+    }
+  }
+  
+  return { minX, maxX, minY, maxY };
+});
+
+const scale = computed(() => {
+  const bounds = mapBounds.value;
+  const rangeX = bounds.maxX - bounds.minX;
+  const rangeY = bounds.maxY - bounds.minY;
+  
+  // Добавляем отступы (20% с каждой стороны)
+  const padding = 0.2;
+  const effectiveWidth = svgWidth * (1 - 2 * padding);
+  const effectiveHeight = svgHeight * (1 - 2 * padding);
+  
+  // Вычисляем масштаб, чтобы все точки поместились
+  const scaleX = rangeX > 0 ? effectiveWidth / rangeX : 10;
+  const scaleY = rangeY > 0 ? effectiveHeight / rangeY : 10;
+  
+  // Используем меньший масштаб, чтобы все поместилось
+  return Math.min(scaleX, scaleY, 20); // Максимум 20 для читаемости
+});
+
+const offsetX = computed(() => {
+  const bounds = mapBounds.value;
+  const centerX = (bounds.minX + bounds.maxX) / 2;
+  return svgWidth / 2 - centerX * scale.value;
+});
+
+const offsetY = computed(() => {
+  const bounds = mapBounds.value;
+  const centerY = (bounds.minY + bounds.maxY) / 2;
+  return svgHeight / 2 + centerY * scale.value;
+});
 
 const transformX = (x: number) => x * scale.value + offsetX.value;
 const transformY = (y: number) => -y * scale.value + offsetY.value;
+
+// Генерация меток для осей координат
+const getAxisMarks = (axis: 'x' | 'y'): number[] => {
+  const bounds = mapBounds.value;
+  const marks: number[] = [];
+  
+  if (axis === 'x') {
+    const min = Math.floor(bounds.minX);
+    const max = Math.ceil(bounds.maxX);
+    const range = max - min;
+    
+    // Определяем шаг меток в зависимости от диапазона
+    let step = 1;
+    if (range > 50) step = 10;
+    else if (range > 20) step = 5;
+    else if (range > 10) step = 2;
+    
+    for (let i = Math.floor(min / step) * step; i <= max; i += step) {
+      marks.push(i);
+    }
+  } else {
+    const min = Math.floor(bounds.minY);
+    const max = Math.ceil(bounds.maxY);
+    const range = max - min;
+    
+    let step = 1;
+    if (range > 50) step = 10;
+    else if (range > 20) step = 5;
+    else if (range > 10) step = 2;
+    
+    for (let i = Math.floor(min / step) * step; i <= max; i += step) {
+      marks.push(i);
+    }
+  }
+  
+  return marks;
+};
 
 const devicePathD = (device: Device) => {
   if (device.path.length < 2) return '';
@@ -619,13 +717,103 @@ const handleDeviceFreqCommit = (device: Device) => {
               :height="svgHeight" 
               class="map-svg"
             >
-              <!-- Сетка -->
+              <!-- Улучшенная сетка с метрами -->
               <defs>
-                <pattern id="grid" width="50" height="50" patternUnits="userSpaceOnUse">
-                  <path d="M 50 0 L 0 0 0 50" fill="none" stroke="#e5e7eb" stroke-width="1"/>
+                <pattern id="gridSmall" :width="scale" :height="scale" patternUnits="userSpaceOnUse">
+                  <path :d="`M ${scale} 0 L 0 0 0 ${scale}`" fill="none" stroke="#f3f4f6" stroke-width="1"/>
+                </pattern>
+                <pattern id="gridLarge" :width="scale * 5" :height="scale * 5" patternUnits="userSpaceOnUse">
+                  <rect :width="scale * 5" :height="scale * 5" fill="url(#gridSmall)"/>
+                  <path :d="`M ${scale * 5} 0 L 0 0 0 ${scale * 5}`" fill="none" stroke="#d1d5db" stroke-width="2"/>
                 </pattern>
               </defs>
-              <rect :width="svgWidth" :height="svgHeight" fill="url(#grid)" />
+              <rect :width="svgWidth" :height="svgHeight" fill="white" />
+              <rect :width="svgWidth" :height="svgHeight" fill="url(#gridLarge)" />
+              
+              <!-- Оси координат (X и Y) -->
+              <line 
+                :x1="transformX(mapBounds.minX - 1)" 
+                :y1="transformY(0)" 
+                :x2="transformX(mapBounds.maxX + 1)" 
+                :y2="transformY(0)" 
+                stroke="#9ca3af" 
+                stroke-width="2" 
+                stroke-dasharray="5,5"
+              />
+              <line 
+                :x1="transformX(0)" 
+                :y1="transformY(mapBounds.minY - 1)" 
+                :x2="transformX(0)" 
+                :y2="transformY(mapBounds.maxY + 1)" 
+                stroke="#9ca3af" 
+                stroke-width="2" 
+                stroke-dasharray="5,5"
+              />
+              
+              <!-- Точка отсчета (0,0) -->
+              <g>
+                <circle 
+                  :cx="transformX(0)" 
+                  :cy="transformY(0)" 
+                  r="6" 
+                  fill="#ef4444" 
+                  stroke="white" 
+                  stroke-width="2"
+                />
+                <line 
+                  :x1="transformX(0) - 8" 
+                  :y1="transformY(0)" 
+                  :x2="transformX(0) + 8" 
+                  :y2="transformY(0)" 
+                  stroke="#ef4444" 
+                  stroke-width="2"
+                />
+                <line 
+                  :x1="transformX(0)" 
+                  :y1="transformY(0) - 8" 
+                  :x2="transformX(0)" 
+                  :y2="transformY(0) + 8" 
+                  stroke="#ef4444" 
+                  stroke-width="2"
+                />
+                <text 
+                  :x="transformX(0) + 12" 
+                  :y="transformY(0) - 12" 
+                  font-size="14" 
+                  font-weight="bold" 
+                  fill="#ef4444"
+                >
+                  (0,0)
+                </text>
+              </g>
+              
+              <!-- Метки координат по оси X -->
+              <g v-for="x in getAxisMarks('x')" :key="'x_' + x">
+                <text 
+                  :x="transformX(x)" 
+                  :y="transformY(0) + 20" 
+                  text-anchor="middle" 
+                  font-size="10" 
+                  fill="#6b7280"
+                  v-if="x !== 0"
+                >
+                  {{ x }}
+                </text>
+              </g>
+              
+              <!-- Метки координат по оси Y -->
+              <g v-for="y in getAxisMarks('y')" :key="'y_' + y">
+                <text 
+                  :x="transformX(0) - 10" 
+                  :y="transformY(y) + 4" 
+                  text-anchor="end" 
+                  font-size="10" 
+                  fill="#6b7280"
+                  v-if="y !== 0"
+                >
+                  {{ y }}
+                </text>
+              </g>
               
               <!-- Маяки -->
               <g v-for="beacon in selectedMap.beacons" :key="beacon.name">
@@ -1026,6 +1214,23 @@ const handleDeviceFreqCommit = (device: Device) => {
   text-align: center;
   font-weight: 600;
   color: #065f46;
+}
+
+.map-info {
+  display: flex;
+  justify-content: space-around;
+  padding: 12px;
+  background: #f9fafb;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  font-size: 0.9rem;
+  color: #374151;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.map-info span {
+  font-weight: 500;
 }
 
 .map-container {
