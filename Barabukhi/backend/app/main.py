@@ -24,7 +24,6 @@ from app.advanced_positioning import AdvancedPositioningEngine
 
 # Словарь движков позиционирования для каждого устройства (по MAC адресу)
 advanced_engines: dict = {}
-engines_calibrated: dict = {}
 
 app = FastAPI(
     title="Indoor Navigation API",
@@ -388,7 +387,7 @@ async def send_signal(request: SendSignalRequest, db: AsyncSession = Depends(get
     Принять данные о сигналах от маяков и вычислить позицию.
     Новая сигнатура: name, mac, map, list:{name, signal, samples}
     """
-    global advanced_engines, engines_calibrated
+    global advanced_engines
 
     # Получаем или создаём устройство
     result = await db.execute(
@@ -459,7 +458,6 @@ async def send_signal(request: SendSignalRequest, db: AsyncSession = Depends(get
     # Получаем или создаём движок для этого устройства
     if request.mac not in advanced_engines:
         advanced_engines[request.mac] = AdvancedPositioningEngine(base_point=(base_x, base_y))
-        engines_calibrated[request.mac] = False
 
     advanced_engine = advanced_engines[request.mac]
 
@@ -494,18 +492,25 @@ async def send_signal(request: SendSignalRequest, db: AsyncSession = Depends(get
         for row in beacons_data
     }
 
-    # Калибруем продвинутый движок при первом запросе для этого устройства
-    if not engines_calibrated.get(request.mac, False) and beacons_map_tuples:
-        advanced_engine.calibrate(beacons_map_tuples)
-        engines_calibrated[request.mac] = True
-        print(f"[Calibration for {request.mac}] alpha={advanced_engine.alpha:.3f}, beta={advanced_engine.beta:.3f}")
-
     # Формируем данные для calculate_position_with_samples
     # report_data: {beacon_name: {'rssi': value, 'samples': count}}
     report_data = {
         signal.name: {'rssi': float(signal.signal), 'samples': signal.samples}
         for signal in request.list
     }
+
+    # Если это первое измерение и base_x/base_y не равны 0,0, используем их для калибровки
+    if not advanced_engine.is_calibrated and (base_x != 0.0 or base_y != 0.0) and beacons_map_tuples:
+        # Преобразуем report_data в формат для калибровки
+        # Из: {beacon_name: {'rssi': value, 'samples': count}}
+        # В:  {beacon_name: {'name': beacon_name, 'rssi': value}}
+        calibration_data = {
+            name: {'name': name, 'rssi': info['rssi']}
+            for name, info in report_data.items()
+        }
+        advanced_engine.set_calibration_point((base_x, base_y), calibration_data)
+        advanced_engine.calibrate(beacons_map_tuples)
+        print(f"[Calibration for {request.mac}] alpha={advanced_engine.alpha:.3f}, beta={advanced_engine.beta:.3f}, base=({base_x}, {base_y})")
 
     # Вычисляем позицию с использованием продвинутого алгоритма с учётом samples
     position_data = advanced_engine.calculate_position_with_samples(
@@ -1018,9 +1023,9 @@ async def websocket_endpoint(websocket: WebSocket, db: AsyncSession = Depends(ge
                         }))
                         continue
 
-                    # Получаем device_id
+                    # Получаем device_id и map_id
                     device_result = await db.execute(
-                        text("SELECT id FROM devices WHERE mac = :mac"),
+                        text("SELECT id, map_id FROM devices WHERE mac = :mac"),
                         {"mac": mac}
                     )
                     device = device_result.first()
@@ -1060,6 +1065,13 @@ async def websocket_endpoint(websocket: WebSocket, db: AsyncSession = Depends(ge
                         {"x": float(x), "y": float(y), "mac": mac}
                     )
                     await db.commit()
+
+                    # Обновляем движок позиционирования с новой базовой точкой
+                    if mac in advanced_engines:
+                        advanced_engines[mac].known_calibration_point = (float(x), float(y))
+                        advanced_engines[mac].prev_position = None
+                        advanced_engines[mac].is_calibrated = False
+                        print(f"[set_base_cord] Updated base point for {mac} to ({x}, {y})")
 
                     # Отправляем обновлённый список устройств
                     devices_result = await db.execute(

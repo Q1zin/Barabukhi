@@ -14,18 +14,6 @@ import numpy as np
 class AdvancedPositioningEngine:
     """Продвинутый движок позиционирования с калибровкой и робастной оценкой"""
 
-    # Калибровочные данные для базовой точки
-    # MAC -> {'name': beacon_name, 'rssi': среднее_значение}
-    CALIBRATION_MEASUREMENTS = {
-        '88:57:21:23:34:CA': {'name': 'beacon_1', 'rssi': -63.3},
-        '84:1F:E8:09:88:96': {'name': 'beacon_2', 'rssi': -57.9},
-        '84:1F:E8:45:49:8E': {'name': 'beacon_3', 'rssi': -66.8},
-        '88:57:21:23:3D:D6': {'name': 'beacon_4', 'rssi': -76.2},
-        '88:57:21:23:50:46': {'name': 'beacon_5', 'rssi': -76.8},
-        '88:57:21:23:3F:6E': {'name': 'beacon_6', 'rssi': -78.0},
-        '4C:C3:82:C4:27:AA': {'name': 'beacon_7', 'rssi': -93.5},
-    }
-
     def __init__(self, base_point: Tuple[float, float] = (0.0, 0.0)):
         """
         Инициализация движка позиционирования.
@@ -33,10 +21,12 @@ class AdvancedPositioningEngine:
         Args:
             base_point: Базовая калибровочная точка (base_x, base_y) из БД
         """
-        self.alpha = -59.0  # RSSI на 1м (будет калиброваться)
-        self.beta = 2.0     # Path loss exponent (будет калиброваться)
+        self.alpha = -59.0  # RSSI на 1м (будет калиброваться динамически)
+        self.beta = 2.0     # Path loss exponent (будет калиброваться динамически)
         self.prev_position: Optional[Tuple[float, float]] = None
         self.known_calibration_point = base_point
+        self.calibration_measurements: Optional[Dict[str, Dict[str, float]]] = None
+        self.is_calibrated = False
 
     @staticmethod
     def rssi_to_distance(rssi: float, alpha: float, beta: float) -> float:
@@ -205,20 +195,36 @@ class AdvancedPositioningEngine:
 
         return x, y
 
+    def set_calibration_point(self, point: Tuple[float, float], measurements: Dict[str, Dict[str, float]]):
+        """
+        Установить калибровочную точку и сохранить измерения для последующей калибровки.
+
+        Args:
+            point: (x, y) координаты калибровочной точки
+            measurements: {beacon_name: {'rssi': value, 'samples': count}} - измерения в этой точке
+        """
+        self.known_calibration_point = point
+        self.calibration_measurements = measurements
+        self.is_calibrated = False
+
     def calibrate(self, beacons: Dict[str, Tuple[float, float]], beta_fixed: Optional[float] = None):
         """
-        Выполнить калибровку alpha/beta по калибровочным данным.
+        Выполнить калибровку alpha/beta по сохранённым калибровочным данным.
 
         Args:
             beacons: {beacon_name: (x, y)} - координаты маяков
             beta_fixed: Если задано, фиксировать beta этим значением
         """
+        if self.calibration_measurements is None:
+            # Если калибровочных данных нет, используем дефолтные значения
+            print("[Calibration] No calibration data available, using defaults")
+            return
+
         if beta_fixed is not None:
             # Оценить только alpha при фиксированном beta
             self.beta = float(beta_fixed)
             vals = []
-            for info in self.CALIBRATION_MEASUREMENTS.values():
-                name = info['name']
+            for name, info in self.calibration_measurements.items():
                 if name not in beacons:
                     continue
                 rssi = float(info['rssi'])
@@ -234,10 +240,12 @@ class AdvancedPositioningEngine:
             # Оценить и alpha, и beta
             self.alpha, self.beta = self.calibrate_alpha_beta(
                 beacons,
-                self.CALIBRATION_MEASUREMENTS,
+                self.calibration_measurements,
                 self.known_calibration_point,
                 initial_beta=2.0
             )
+
+        self.is_calibrated = True
 
     def calculate_position_with_samples(
         self,
@@ -280,13 +288,16 @@ class AdvancedPositioningEngine:
             d = max(min_distance, min(max_distance, d))
             distances[beacon_name] = d
 
-            # Вес: по количеству проб + геометрический вес
+            # Вес только по количеству проб (мягкий рост)
             w_samp = 1.0 + 0.25 * max(0, samples - 1)
-            w_geo = 1.0 / max(0.5, d) ** 2
-            weights[beacon_name] = w_samp * w_geo
+            weights[beacon_name] = w_samp
 
         if len(distances) < 3:
             return None
+
+        # Добавляем геометрический вес 1/d^2 к весам по samples (как в старой версии)
+        for name, d in distances.items():
+            weights[name] = weights.get(name, 1.0) * (1.0 / max(0.5, d) ** 2)
 
         # Определяем стартовую позицию
         if self.prev_position:
