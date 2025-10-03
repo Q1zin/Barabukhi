@@ -6,7 +6,7 @@ import urequests as requests
 import ubinascii
 import ubluetooth
 
-SSID = "HotDot"
+SSID = "iPhone (Владимир)"
 PASSWORD = "12345678"
 
 map_name = None
