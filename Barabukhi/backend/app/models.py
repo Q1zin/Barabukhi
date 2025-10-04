@@ -12,7 +12,7 @@ class MacRequest(BaseModel):
 
 class FreqResponse(BaseModel):
     """Ответ с частотой"""
-    freq: int
+    freq: float
 
 
 class StatusRoadResponse(BaseModel):

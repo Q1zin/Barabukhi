@@ -19,7 +19,6 @@ from app.models import (
     DeviceCreateRequest, DeviceUpdateRequest, DeviceResponse,
     PositionRequest, PositionResponse, PathPoint, DevicePathResponse
 )
-from app.positioning import PositioningEngine, BeaconData
 from app.advanced_positioning import AdvancedPositioningEngine
 
 # Словарь движков позиционирования для каждого устройства (по MAC адресу)
@@ -67,6 +66,38 @@ async def health_check(db: AsyncSession = Depends(get_db)):
 
 # ==================== HELPER FUNCTIONS ====================
 
+async def broadcast_all_devices(db: AsyncSession):
+    """Отправить список всех устройств всем WebSocket клиентам"""
+    devices_result = await db.execute(
+        text("""
+            SELECT id, name, mac, map_id, poll_frequency, write_road, color, base_x, base_y
+            FROM devices
+            ORDER BY created_at DESC
+        """)
+    )
+    devices = devices_result.fetchall()
+
+    devices_list = [
+        {
+            "id": d.id,
+            "name": d.name,
+            "mac": d.mac,
+            "map_set": d.map_id,
+            "freq": float(d.poll_frequency),
+            "write_road": d.write_road,
+            "color": d.color,
+            "base_x": float(d.base_x),
+            "base_y": float(d.base_y)
+        }
+        for d in devices
+    ]
+
+    await manager.broadcast({
+        "type": "all_device",
+        "data": devices_list
+    })
+
+
 async def get_or_create_device(mac: str, db: AsyncSession) -> int:
     """
     Получить или создать устройство по MAC адресу.
@@ -106,6 +137,10 @@ async def get_or_create_device(mac: str, db: AsyncSession) -> int:
         }
     )
     await db.commit()
+
+    # Отправляем уведомление о новом устройстве всем WebSocket клиентам
+    await broadcast_all_devices(db)
+
     return insert_result.scalar()
 
 
@@ -124,8 +159,8 @@ async def get_freq(request: MacRequest, db: AsyncSession = Depends(get_db)):
     )
     device = result.first()
 
-    # Конвертируем poll_frequency (Гц) в целое число
-    return FreqResponse(freq=int(float(device.poll_frequency)))
+    # Конвертируем poll_frequency (Гц) в дробное число
+    return FreqResponse(freq=float(device.poll_frequency))
 
 
 @app.post("/get_status_road", response_model=StatusRoadResponse)
@@ -258,6 +293,7 @@ async def set_map_to_device(request: SetMapToDeviceRequest, db: AsyncSession = D
     )
     device = device_result.first()
 
+    device_created = False
     if device:
         # Обновляем map_id для существующего устройства
         await db.execute(
@@ -280,8 +316,14 @@ async def set_map_to_device(request: SetMapToDeviceRequest, db: AsyncSession = D
                 "color": "#3b82f6"
             }
         )
+        device_created = True
 
     await db.commit()
+
+    # Отправляем уведомление о новом устройстве всем WebSocket клиентам
+    if device_created:
+        await broadcast_all_devices(db)
+
     return SetMapToDeviceResponse(success=True)
 
 
@@ -298,6 +340,7 @@ async def set_freq(request: SetFreqRequest, db: AsyncSession = Depends(get_db)):
     )
     device = device_result.first()
 
+    device_created = False
     if device:
         # Обновляем частоту для существующего устройства
         await db.execute(
@@ -327,8 +370,14 @@ async def set_freq(request: SetFreqRequest, db: AsyncSession = Depends(get_db)):
                 "color": "#3b82f6"
             }
         )
+        device_created = True
 
     await db.commit()
+
+    # Отправляем уведомление о новом устройстве всем WebSocket клиентам
+    if device_created:
+        await broadcast_all_devices(db)
+
     return SetFreqResponse(success=True)
 
 
@@ -413,6 +462,7 @@ async def send_signal(request: SendSignalRequest, db: AsyncSession = Depends(get
     else:
         map_id = map_data.id
 
+    device_created = False
     if not device:
         # Создаём устройство если не существует
         device_insert = await db.execute(
@@ -448,6 +498,10 @@ async def send_signal(request: SendSignalRequest, db: AsyncSession = Depends(get
         )
 
         await db.commit()
+
+        # Отправляем уведомление о новом устройстве всем WebSocket клиентам
+        await broadcast_all_devices(db)
+        device_created = True
     else:
         device_id = device.id
         write_road = device.write_road
@@ -573,21 +627,25 @@ class ConnectionManager:
         if websocket in self.active_connections:
             self.active_connections.remove(websocket)
 
-    async def broadcast_position(self, data: dict):
-        """Отправить позицию всем подключенным клиентам"""
+    async def broadcast(self, message: dict):
+        """Отправить сообщение всем подключенным клиентам"""
         disconnected = []
         for connection in self.active_connections:
             try:
-                await connection.send_text(json.dumps({
-                    "type": "position_update",
-                    "data": data
-                }))
+                await connection.send_text(json.dumps(message))
             except Exception:
                 disconnected.append(connection)
 
         # Удаляем отключенные соединения
         for conn in disconnected:
             self.disconnect(conn)
+
+    async def broadcast_position(self, data: dict):
+        """Отправить позицию всем подключенным клиентам"""
+        await self.broadcast({
+            "type": "position_update",
+            "data": data
+        })
 
 manager = ConnectionManager()
 
@@ -1375,6 +1433,9 @@ async def create_device(device: DeviceCreateRequest, db: AsyncSession = Depends(
     )
     await db.commit()
     d = result.first()
+
+    # Отправляем уведомление о новом устройстве всем WebSocket клиентам
+    await broadcast_all_devices(db)
 
     return DeviceResponse(
         id=d.id,
