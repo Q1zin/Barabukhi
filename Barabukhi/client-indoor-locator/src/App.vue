@@ -388,8 +388,21 @@ const handleDeviceMapChange = (device: Device) => {
 };
 
 // Визуализация
-const svgWidth = 600;
-const svgHeight = 600;
+const svgWidth = ref(600);
+const svgHeight = ref(600);
+
+// Обновление размеров SVG при изменении размера окна
+const updateSvgSize = () => {
+  const width = window.innerWidth;
+  if (width < 670) {
+    // На маленьких экранах делаем SVG меньше с отступами
+    svgWidth.value = Math.max(280, width - 50);
+    svgHeight.value = Math.max(280, width - 50);
+  } else {
+    svgWidth.value = 600;
+    svgHeight.value = 600;
+  }
+};
 
 // Динамическое вычисление масштаба и смещения на основе выбранной карты
 const mapBounds = computed(() => {
@@ -432,8 +445,8 @@ const scale = computed(() => {
   
   // Добавляем отступы (20% с каждой стороны)
   const padding = 0.2;
-  const effectiveWidth = svgWidth * (1 - 2 * padding);
-  const effectiveHeight = svgHeight * (1 - 2 * padding);
+  const effectiveWidth = svgWidth.value * (1 - 2 * padding);
+  const effectiveHeight = svgHeight.value * (1 - 2 * padding);
   
   // Вычисляем масштаб, чтобы все точки поместились
   const scaleX = rangeX > 0 ? effectiveWidth / rangeX : 10;
@@ -446,13 +459,13 @@ const scale = computed(() => {
 const offsetX = computed(() => {
   const bounds = mapBounds.value;
   const centerX = (bounds.minX + bounds.maxX) / 2;
-  return svgWidth / 2 - centerX * scale.value;
+  return svgWidth.value / 2 - centerX * scale.value;
 });
 
 const offsetY = computed(() => {
   const bounds = mapBounds.value;
   const centerY = (bounds.minY + bounds.maxY) / 2;
-  return svgHeight / 2 + centerY * scale.value;
+  return svgHeight.value / 2 + centerY * scale.value;
 });
 
 const transformX = (x: number) => x * scale.value + offsetX.value;
@@ -506,6 +519,12 @@ const devicePathD = (device: Device) => {
 
 // Lifecycle
 onMounted(() => {
+  // Устанавливаем начальный размер SVG
+  updateSvgSize();
+  
+  // Слушаем изменение размера окна
+  window.addEventListener('resize', updateSvgSize);
+  
   // Подключение к WebSocket бэкенда
   try {
     const socket = new WebSocket(backendWsUrl.value);
@@ -536,6 +555,9 @@ onMounted(() => {
 });
 
 onUnmounted(() => {
+  // Удаляем обработчик изменения размера окна
+  window.removeEventListener('resize', updateSvgSize);
+  
   devices.value.forEach((d: Device) => stopDevicePolling(d.id));
   if (ws.value) {
     try { ws.value.close(); } catch {}
@@ -978,6 +1000,39 @@ const handleDeviceFreqCommit = (device: Device) => {
   margin: 0 auto;
 }
 
+/* Мобильная адаптация */
+@media (max-width: 768px) {
+  .app-container {
+    padding: 10px;
+  }
+
+  .app-header h1 {
+    font-size: 1.8rem;
+  }
+
+  .app-header p {
+    font-size: 0.95rem;
+  }
+
+  .app-header {
+    margin-bottom: 20px;
+  }
+
+  .main-layout {
+    grid-template-columns: 1fr;
+    gap: 15px;
+  }
+
+  .card {
+    padding: 16px;
+  }
+
+  .card h2 {
+    font-size: 1.1rem;
+    margin-bottom: 16px;
+  }
+}
+
 .sidebar {
   display: flex;
   flex-direction: column;
@@ -995,6 +1050,7 @@ const handleDeviceFreqCommit = (device: Device) => {
   border-radius: 12px;
   padding: 24px;
   box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  border: none;
 }
 
 .card h2 {
@@ -1016,14 +1072,31 @@ const handleDeviceFreqCommit = (device: Device) => {
 }
 
 .form-group input[type="text"],
-.form-group textarea {
+.form-group textarea,
+.form-group select,
+.form-group input[type="number"] {
   width: 100%;
   padding: 10px 12px;
-  border: 2px solid #e5e7eb;
+  border: 1px solid #e5e7eb;
   border-radius: 8px;
   font-size: 0.95rem;
   transition: border-color 0.2s;
   font-family: inherit;
+  background: white;
+}
+
+@media (max-width: 768px) {
+  .form-group input[type="text"],
+  .form-group textarea,
+  .form-group select,
+  .form-group input[type="number"] {
+    font-size: 16px; /* Предотвращает зум на iOS */
+    padding: 12px;
+  }
+
+  .form-group textarea {
+    min-height: 120px;
+  }
 }
 
 .form-group input[type="text"]:focus,
@@ -1109,6 +1182,18 @@ const handleDeviceFreqCommit = (device: Device) => {
   gap: 8px;
 }
 
+@media (max-width: 768px) {
+  .button-group {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .button-group .btn {
+    font-size: 0.9rem;
+    padding: 10px 16px;
+  }
+}
+
 .map-list {
   display: flex;
   flex-direction: column;
@@ -1120,20 +1205,22 @@ const handleDeviceFreqCommit = (device: Device) => {
   align-items: center;
   justify-content: space-between;
   padding: 12px 16px;
-  border: 2px solid #e5e7eb;
+  border: none;
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.2s;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  background: #fafafa;
 }
 
 .map-item:hover {
-  border-color: #667eea;
   background: #f9fafb;
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
 }
 
 .map-item-active {
-  border-color: #667eea;
   background: #eef2ff;
+  box-shadow: 0 4px 8px rgba(102, 126, 234, 0.2);
 }
 
 .map-item-content {
@@ -1169,9 +1256,27 @@ const handleDeviceFreqCommit = (device: Device) => {
   margin-top: 12px;
 }
 .device-item {
-  border: 2px solid #e5e7eb;
+  border: none;
   border-radius: 8px;
   padding: 12px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  background: #fafafa;
+}
+
+@media (max-width: 768px) {
+  .device-item {
+    padding: 10px;
+  }
+
+  .device-header {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .device-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
 }
 .device-item-inactive {
   opacity: 0.8;
@@ -1236,20 +1341,41 @@ const handleDeviceFreqCommit = (device: Device) => {
 .map-container {
   display: flex;
   justify-content: center;
-  overflow-x: auto;
+  width: 100%;
 }
 
 .map-svg {
-  border: 2px solid #e5e7eb;
+  border: none;
   border-radius: 8px;
   background: white;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+  max-width: 100%;
+  height: auto;
 }
 
 .path-table-container {
   max-height: 400px;
   overflow-y: auto;
-  border: 1px solid #e5e7eb;
+  overflow-x: auto;
+  border: none;
   border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+@media (max-width: 768px) {
+  .path-table-container {
+    max-height: 300px;
+  }
+
+  .path-table th,
+  .path-table td {
+    padding: 8px 10px;
+    font-size: 0.85rem;
+  }
+
+  .path-table th {
+    font-size: 0.8rem;
+  }
 }
 
 .path-table {
@@ -1295,9 +1421,51 @@ const handleDeviceFreqCommit = (device: Device) => {
   color: #374151;
 }
 
+/* Планшеты */
 @media (max-width: 1200px) {
   .main-layout {
     grid-template-columns: 1fr;
+  }
+}
+
+/* Дополнительные улучшения для маленьких экранов */
+@media (max-width: 480px) {
+  .app-container {
+    padding: 5px;
+  }
+
+  .app-header h1 {
+    font-size: 1.5rem;
+  }
+
+  .app-header p {
+    font-size: 0.85rem;
+  }
+
+  .card {
+    padding: 12px;
+    border-radius: 8px;
+  }
+
+  .btn {
+    padding: 10px 14px;
+    font-size: 0.85rem;
+  }
+
+  .map-info {
+    flex-direction: column;
+    gap: 8px;
+    text-align: center;
+  }
+
+  .path-stats {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .path-stats span {
+    margin-left: 0 !important;
   }
 }
 </style>
